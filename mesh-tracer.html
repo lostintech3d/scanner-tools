@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scan to STEP</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#dfe3e6;--panel:#f6f7f8;--ink:#1c2227;--mute:#66727c;--line:#c5cbd0;--acc:#1b4fd8;--pt:#e0245e}
+@media (prefers-color-scheme:dark){:root{--bg:#242a2f;--panel:#1b2024;--ink:#e6eaed;--mute:#8d99a3;--line:#343c43}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+#app{display:grid;grid-template-columns:1fr 310px;height:100%}
+#view{position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%;cursor:crosshair}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lb{position:absolute;left:0;top:0;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,.92);color:#10306f;font:500 11px "IBM Plex Mono",monospace;white-space:nowrap}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--mute);pointer-events:none;padding:2rem}
+aside{background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:15px;margin:0;font-weight:600}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+button,select,input{font:inherit;color:inherit}
+button{padding:6px 10px;border:1px solid var(--line);background:transparent;border-radius:5px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--acc)}
+button:disabled{opacity:.4;cursor:default}
+button.main{background:var(--acc);border-color:var(--acc);color:#fff}
+button:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+select{padding:5px;border:1px solid var(--line);border-radius:5px;background:var(--panel)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-family:"IBM Plex Mono",monospace;font-size:12.5px}
+.kv span:nth-child(odd){color:var(--mute)}
+.kv span:nth-child(even){text-align:right}
+#list{font-family:"IBM Plex Mono",monospace;font-size:12px;display:flex;flex-direction:column}
+#list .sh{display:flex;align-items:center;gap:8px;padding:2px 0;border-bottom:1px solid var(--line)}
+#list .sh span:first-child{flex:1}
+#list .sub{color:var(--mute);font-size:11.5px;padding-bottom:2px}
+.x{padding:0 7px;line-height:1.6;border-color:transparent;color:var(--mute)}
+.x:hover{border-color:#c0392b!important;color:#c0392b}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.seg button{padding:6px 2px}
+#planeBox,#surfBox{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:6px}
+#planeBox label,#list label,#surfBox label{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:12px}
+#surfBox input[type=range]{flex:1;min-width:0}
+#surfBox label span{min-width:3.2em;text-align:right;font-family:"IBM Plex Mono",monospace}
+button.sm{padding:4px 8px;font-size:12.5px}
+.seg button[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+#status{color:var(--mute);font-size:12.5px;min-height:2.6em}
+small{color:var(--mute)}
+@media (max-width:760px){#app{grid-template-columns:1fr;grid-template-rows:60% 40%}aside{border-left:0;border-top:1px solid var(--line)}}
+</style>
+<script type="importmap">
+{"imports":{
+"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+"three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.3/build/index.module.js"}}
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="view"><canvas id="cv"></canvas><div id="labels"></div>
+    <div id="drop">Drop an STL, OBJ or PLY scan here, or use Open mesh</div></div>
+  <aside>
+    <h1>Scan to STEP</h1>
+    <div class="row">
+      <button class="main" id="open">Open mesh</button>
+      <select id="units" title="Units the mesh file is in">
+        <option value="1">File is mm</option><option value="10">File is cm</option>
+        <option value="1000">File is m</option><option value="25.4">File is inches</option></select>
+      <input type="file" id="file" accept=".stl,.obj,.ply" hidden>
+    </div>
+    <div class="seg" id="tools" role="group" aria-label="Tool">
+      <button data-t="path" aria-pressed="true">Path (1)</button>
+      <button data-t="circle" aria-pressed="false">Circle (2)</button>
+      <button data-t="bezier" aria-pressed="false">Bezier (3)</button>
+      <button data-t="move" aria-pressed="false">Move (4)</button>
+      <button data-t="plane" aria-pressed="false">Plane (5)</button>
+      <button data-t="join" aria-pressed="false">Join (6)</button>
+      <button data-t="surface" aria-pressed="false">Surface (7)</button>
+    </div>
+    <div id="planeBox">
+      <strong>Working plane</strong>
+      <select id="planeMode"><option value="surface">Plane tool: click surface</option><option value="3pts">Plane tool: 3 points</option></select>
+      <div class="row"><button class="sm" data-pl="z" disabled>XY</button><button class="sm" data-pl="y" disabled>XZ</button><button class="sm" data-pl="x" disabled>YZ</button>
+        <button class="sm" id="plMode" disabled>Gizmo: rotate</button></div>
+      <div class="row"><button class="sm" id="plView" disabled>View along</button><button class="sm" id="plDel" disabled>Remove</button>
+        <label><input type="checkbox" id="plOn" checked> Draw on plane</label></div>
+      <div class="row"><label><input type="checkbox" id="exOn" checked> Export in plane frame</label></div>
+      <div class="row"><button class="sm" id="exOrigin" disabled>Pick origin</button><button class="sm" id="exReset" disabled>Reset origin</button><button class="sm" id="exFlip" disabled>Flip Z</button></div>
+      <small>Plane axes: red X, green Y, blue Z. The STEP is written with its origin and axes at this frame, so it opens upright and centred in CAD.</small>
+    </div>
+    <div id="surfBox">
+      <strong>Surface finder</strong>
+      <label>Edge angle <input type="range" id="segAng" min="5" max="75" value="30"><span id="segAngV">30°</span></label>
+      <label>Outline detail <input type="range" id="segTol" min="1" max="30" value="5"><span id="segTolV">0.5%</span></label>
+      <select id="segMode"><option value="auto">Auto fit: plane, cylinder or sphere</option><option value="flat">Flat only (won't creep round curves)</option></select>
+      <div class="kv" id="surfInfo"></div>
+      <div class="row"><button class="sm" id="sfPlane" disabled>Plane from fit</button><button class="sm" id="sfSketch" disabled>Outline → shape</button><button class="sm" id="sfClear" disabled>Clear</button></div>
+    </div>
+    <div class="row">
+      <button id="bLine" disabled>Finish (Enter)</button>
+      <button id="bFace" disabled>Close (C)</button>
+      <button id="bUndo" disabled>Undo (Ctrl+Z)</button>
+    </div>
+    <div class="kv" id="live"></div>
+    <div><strong>Shapes</strong><div id="list"></div></div>
+    <div class="row">
+      <button id="bSew" disabled>Sew to solid</button>
+      <button class="main" id="bStep" disabled>Export STEP</button>
+    </div>
+    <div id="oc" style="font:12.5px 'IBM Plex Mono',monospace;color:var(--mute)">OpenCascade: starting…</div>
+    <div id="status">Open a mesh, then click vertices.</div>
+    <small>Left-drag orbits, right-drag pans, wheel zooms. Picks snap to the nearest triangle vertex. Esc cancels the current path. Hover a shape in the list to highlight it.</small>
+  </aside>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {STLLoader} from 'three/addons/loaders/STLLoader.js';
+import {PLYLoader} from 'three/addons/loaders/PLYLoader.js';
+import {OBJLoader} from 'three/addons/loaders/OBJLoader.js';
+import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
+import {TransformControls} from 'three/addons/controls/TransformControls.js';
+import {computeBoundsTree, disposeBoundsTree, acceleratedRaycast} from 'three-mesh-bvh';
+
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+const $ = id => document.getElementById(id);
+const cv = $('cv'), view = $('view'), labelsEl = $('labels');
+const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, cv);
+controls.addEventListener('change', requestRender);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x667077, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); scene.add(sun);
+
+let mesh = null, geom = null, scale = 1, diag = 1;
+let oc = null;
+const pts = [];                 // raw model-space Vector3, one per unique picked vertex
+const ptMap = new Map();
+let cur = [], curGroup = null;  // path in progress (indices into pts)
+let tool = 'path';
+const exportLocal = new THREE.Vector3();   // export origin, in the working plane's local coordinates (z = 0)
+let pickingOrigin = false, frameAxes = null;
+const ptPlane = new Map();       // point index -> {o, n} plane it was drawn on
+let lastUndo = null, joinSel = null, planeObj = null, planePts = [], lastHit = null, topo = null, surf = null;
+const shapes = [];              // {type: path|circle|bezier, ids, closed, group, d, brep}
+let solid = null, solidInfo = '';
+const mm = i => pts[i].clone().multiplyScalar(scale);
+const fmt = v => v >= 1000 ? v.toFixed(1) : v.toFixed(2);
+const status = t => $('status').textContent = t;
+
+/* ---------- rendering ---------- */
+let queued = false;
+function requestRender() { if (!queued) { queued = true; requestAnimationFrame(draw); } }
+const tmp = new THREE.Vector3();
+function draw() {
+  queued = false;
+  sun.position.copy(camera.position);
+  renderer.render(scene, camera);
+  const w = view.clientWidth, h = view.clientHeight;
+  for (const L of allLabels) {
+    tmp.copy(L.pos).project(camera);
+    const ok = tmp.z < 1 && tmp.z > -1;
+    L.el.style.display = ok ? '' : 'none';
+    if (ok) L.el.style.transform = `translate(${(tmp.x * .5 + .5) * w}px,${(-tmp.y * .5 + .5) * h}px) translate(-50%,-130%)`;
+  }
+}
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); requestRender();
+}
+new ResizeObserver(resize).observe(view);
+
+/* ---------- mesh loading ---------- */
+async function loadMesh(file) {
+  status(`Reading ${file.name}…`);
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    const ext = file.name.split('.').pop().toLowerCase();
+    let g;
+    if (ext === 'stl') g = new STLLoader().parse(await file.arrayBuffer());
+    else if (ext === 'ply') g = new PLYLoader().parse(await file.arrayBuffer());
+    else if (ext === 'obj') {
+      const gs = []; new OBJLoader().parse(await file.text()).traverse(o => o.isMesh && gs.push(o.geometry.deleteAttribute('normal') || o.geometry));
+      g = gs.length > 1 ? mergeGeometries(gs) : gs[0];
+    } else throw new Error('Use STL, OBJ or PLY');
+    status('Building BVH for picking…');
+    await new Promise(r => setTimeout(r, 30));
+    g.computeBoundingBox(); g.computeBoundingSphere();
+    g.computeBoundsTree();
+    clearAll(); removePlane(); topo = null; clearSurf();
+    if (mesh) { scene.remove(mesh); mesh.geometry.disposeBoundsTree(); mesh.geometry.dispose(); }
+    geom = g;
+    mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({color: 0xb7bfc4, roughness: .8, metalness: 0, flatShading: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1}));
+    scene.add(mesh);
+    const s = g.boundingSphere; diag = s.radius * 2;
+    camera.near = diag / 2000; camera.far = diag * 50; camera.updateProjectionMatrix();
+    camera.position.copy(s.center).add(new THREE.Vector3(.8, -1.2, .7).multiplyScalar(diag * .9));
+    controls.target.copy(s.center); controls.update();
+    hover.material.size = 12;
+    $('drop').style.display = 'none';
+    const n = (g.index ? g.index.count : g.attributes.position.count) / 3;
+    status(`${n.toLocaleString()} triangles loaded. Set the units dropdown if the file isn't in mm.`);
+    requestRender();
+  } catch (e) { status('Could not load mesh: ' + e.message); }
+}
+$('open').onclick = () => $('file').click();
+$('file').onchange = e => e.target.files[0] && loadMesh(e.target.files[0]);
+view.addEventListener('dragover', e => e.preventDefault());
+view.addEventListener('drop', e => { e.preventDefault(); e.dataTransfer.files[0] && loadMesh(e.dataTransfer.files[0]); });
+$('units').onchange = () => { scale = +$('units').value; rebuildAll(); };
+
+/* ---------- picking ---------- */
+const ray = new THREE.Raycaster(); ray.firstHitOnly = true;
+const hover = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3)),
+  new THREE.PointsMaterial({color: 0xffb000, size: 12, sizeAttenuation: false, depthTest: false}));
+hover.renderOrder = 20; hover.visible = false; hover.frustumCulled = false; scene.add(hover);
+
+function pick(e) {
+  if (!mesh) return null;
+  const r = cv.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObject(mesh, false)[0];
+  lastHit = hit || null;
+  if (!hit) return null;
+  const pa = geom.attributes.position, f = hit.face;
+  let best = null, bd = Infinity;
+  for (const i of [f.a, f.b, f.c]) {
+    const v = new THREE.Vector3().fromBufferAttribute(pa, i), d = v.distanceToSquared(hit.point);
+    if (d < bd) { bd = d; best = v; }
+  }
+  return best;
+}
+/* ---------- working plane ---------- */
+const tc = new TransformControls(camera, cv);
+tc.setMode('rotate'); tc.setSpace('local'); tc.setSize(.9); tc.visible = false; tc.enabled = false;
+tc.addEventListener('dragging-changed', e => { controls.enabled = !e.value; });
+tc.addEventListener('change', requestRender);
+scene.add(tc);
+const planeDots = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({color: 0x00a37a, size: 12, sizeAttenuation: false, depthTest: false}));
+planeDots.renderOrder = 20; planeDots.frustumCulled = false; planeDots.visible = false; scene.add(planeDots);
+function updatePlaneDots() {
+  planeDots.geometry.dispose(); planeDots.geometry = new THREE.BufferGeometry().setFromPoints(planePts);
+  planeDots.visible = planePts.length > 0; requestRender();
+}
+const planeNormal = () => new V3(0, 0, 1).applyQuaternion(planeObj.quaternion).normalize();
+const planeSnap = () => ({o: planeObj.position.clone(), n: planeNormal()});
+const projectPt = (v, pl) => v.clone().addScaledVector(pl.n, -v.clone().sub(pl.o).dot(pl.n));
+function syncGizmo() {
+  if (planeObj && tool === 'plane') { tc.attach(planeObj); tc.visible = true; tc.enabled = true; }
+  else { tc.detach(); tc.visible = false; tc.enabled = false; }
+  requestRender();
+}
+function makePlane(o, n) {
+  removePlane();
+  const size = diag * .7, g = new THREE.Group();
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({color: 0x00a37a, transparent: true, opacity: .16, side: THREE.DoubleSide, depthWrite: false}));
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry), new THREE.LineBasicMaterial({color: 0x00a37a}));
+  exportLocal.set(0, 0, 0);
+  frameAxes = new THREE.AxesHelper(diag * .12); frameAxes.material.depthTest = false; frameAxes.renderOrder = 14;
+  g.add(m, edge, new THREE.ArrowHelper(new V3(0, 0, 1), new V3(), size * .3, 0x00a37a), frameAxes);
+  g.position.copy(o); g.quaternion.setFromUnitVectors(new V3(0, 0, 1), n.clone().normalize());
+  scene.add(g); planeObj = g; $('plOn').checked = true;
+  syncGizmo(); updateUI();
+}
+function removePlane() {
+  if (!planeObj) return;
+  tc.detach(); scene.remove(planeObj); planeObj.traverse(o => o.geometry && o.geometry.dispose()); planeObj = null;
+  syncGizmo(); updateUI();
+}
+function viewAlong() {
+  if (!planeObj) return;
+  const n = planeNormal(), o = planeObj.position;
+  const dist = camera.position.distanceTo(controls.target) || diag;
+  const side = Math.sign(n.dot(camera.position.clone().sub(o))) || 1;
+  camera.up.set(Math.abs(n.z) > .99 ? 0 : 0, Math.abs(n.z) > .99 ? 1 : 0, Math.abs(n.z) > .99 ? 0 : 1);
+  camera.position.copy(o).addScaledVector(n, side * dist); controls.target.copy(o); camera.lookAt(o); controls.update();
+}
+function planeClick(e) {
+  const v = pick(e);
+  if (!v) return status('Click on the mesh to place a plane.');
+  if ($('planeMode').value === '3pts') {
+    planePts.push(v.clone()); updatePlaneDots();
+    if (planePts.length < 3) return status(`Plane: ${planePts.length} of 3 points.`);
+    const [a, b, c] = planePts, n = new V3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+    planePts = []; updatePlaneDots();
+    if (n.lengthSq() < 1e-12) return status('Those 3 points are collinear, so they define no plane.');
+    makePlane(a.clone().add(b).add(c).divideScalar(3), n);
+  } else {
+    const n = lastHit.face.normal.clone();
+    if (n.dot(ray.ray.direction) > 0) n.negate();
+    makePlane(v, n);
+  }
+  status('Plane placed. Rotate or move it with the gizmo, then pick a drawing tool: points project onto it.');
+}
+// Vertex under the cursor, projected onto pl; if the ray misses the mesh, the point where it hits the plane.
+function pickOn(e, pl) {
+  const m = pick(e);
+  if (!pl) return m;
+  if (m) return projectPt(m, pl);
+  if (!mesh) return null;
+  return ray.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(pl.n, pl.o), new V3());
+}
+const drawPlane = () => (planeObj && $('plOn').checked) ? planeSnap() : null;
+
+/* ---------- export frame ---------- */
+function syncAxes() { if (planeObj && frameAxes) { frameAxes.position.copy(exportLocal); requestRender(); } }
+function originClick(e) {
+  if (!planeObj) { pickingOrigin = false; return; }
+  const i = nearestPoint(e), v = i >= 0 ? pts[i].clone() : pick(e);
+  if (!v) return status('Click the mesh or a placed point to set the export origin.');
+  planeObj.updateMatrixWorld(true);
+  exportLocal.copy(planeObj.worldToLocal(v)); exportLocal.z = 0;   // origin lies in the plane
+  pickingOrigin = false; syncAxes(); cv.style.cursor = 'crosshair';
+  status('Export origin set (projected onto the plane). The coloured axes show the frame the STEP will use.');
+}
+function toFrame(shape) {
+  planeObj.updateMatrixWorld(true);
+  const o = planeObj.localToWorld(exportLocal.clone()).multiplyScalar(scale);   // mm
+  const q = planeObj.quaternion, z = new V3(0, 0, 1).applyQuaternion(q), x = new V3(1, 0, 0).applyQuaternion(q);
+  const ax = new oc.gp_Ax3_3(gp(o), new oc.gp_Dir_4(z.x, z.y, z.z), new oc.gp_Dir_4(x.x, x.y, x.z));
+  const tr = new oc.gp_Trsf_1(); tr.SetTransformation_2(ax);   // world -> plane frame
+  return new oc.BRepBuilderAPI_Transform_2(shape, tr, true).Shape();
+}
+
+/* ---------- join endpoints ---------- */
+const endDots = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({color: 0x00a37a, size: 13, sizeAttenuation: false, depthTest: false}));
+const joinMark = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3)),
+  new THREE.PointsMaterial({color: 0xffa000, size: 18, sizeAttenuation: false, depthTest: false}));
+[endDots, joinMark].forEach(o => { o.renderOrder = 15; o.frustumCulled = false; o.visible = false; scene.add(o); });
+const joinable = () => shapes.filter(s => s.type === 'path' && !s.closed);
+const endIdx = h => h.s.ids[h.end === 'start' ? 0 : h.s.ids.length - 1];
+function updateEndDots() {
+  const on = tool === 'join';
+  const P = on ? joinable().flatMap(s => [pts[s.ids[0]], pts[s.ids.at(-1)]]) : [];
+  endDots.geometry.dispose(); endDots.geometry = new THREE.BufferGeometry().setFromPoints(P);
+  endDots.visible = P.length > 0;
+  joinMark.visible = on && !!joinSel;
+  if (joinMark.visible) joinMark.position.copy(pts[endIdx(joinSel)]);
+}
+function screenDist(e, i) {
+  const r = cv.getBoundingClientRect(); tmp.copy(pts[i]).project(camera);
+  return tmp.z > 1 ? Infinity : Math.hypot((tmp.x * .5 + .5) * r.width - (e.clientX - r.left), (-tmp.y * .5 + .5) * r.height - (e.clientY - r.top));
+}
+function endpointAt(e) {
+  let best = null, bd = 14;
+  for (const s of joinable()) for (const end of ['start', 'end']) {
+    const d = screenDist(e, s.ids[end === 'start' ? 0 : s.ids.length - 1]);
+    if (d < bd) { bd = d; best = {s, end}; }
+  }
+  return best;
+}
+function addShape(s) { s.d = describe(s); s.group = makeVisual(s); shapes.push(s); buildBrep(s); return s; }
+function joinClick(e) {
+  const h = endpointAt(e);
+  if (!h) return;
+  if (!joinSel) { joinSel = h; updateEndDots(); requestRender(); return status('Now click the end to join it to. The other end of the same line closes it into a face.'); }
+  const a = joinSel; joinSel = null;
+  if (a.s === h.s && a.end === h.end) { updateEndDots(); requestRender(); return status('Join cancelled.'); }
+  solid = null; hl = -1;
+  if (a.s === h.s) {
+    const s = a.s, prev = {ids: s.ids.slice(), closed: s.closed};
+    const ids = s.ids.slice(); if (ids[0] === ids.at(-1)) ids.pop();
+    if (ids.length < 3) { updateEndDots(); return status('Need at least 3 points to close a line into a face.'); }
+    s.ids = ids; s.closed = true; s.fill = true; refresh(s, true);
+    lastUndo = () => { s.ids = prev.ids; s.closed = prev.closed; refresh(s, true); updateUI(); requestRender(); status('Close undone.'); };
+    status('Line closed into a face.');
+  } else {
+    const A = a.s.ids.slice(), B = h.s.ids.slice();
+    if (a.end === 'start') A.reverse();
+    if (h.end === 'end') B.reverse();
+    if (A.at(-1) === B[0]) B.shift();
+    const removed = [a.s, h.s].map(x => ({s: x, i: shapes.indexOf(x)})).sort((p, q) => q.i - p.i);
+    removed.forEach(r => { removeVisual(r.s.group); shapes.splice(r.i, 1); });
+    const merged = addShape({type: 'path', ids: [...A, ...B], closed: false});
+    lastUndo = () => {
+      removeVisual(merged.group); shapes.splice(shapes.indexOf(merged), 1);
+      removed.slice().reverse().forEach(r => { shapes.splice(r.i, 0, r.s); refresh(r.s, false); });
+      solid = null; hl = -1; updateUI(); requestRender(); status('Join undone.');
+    };
+    status(`Joined into one line of ${merged.ids.length} points.`);
+  }
+  updateUI(); requestRender();
+}
+
+/* ---------- surface segmentation (pure: no DOM, no THREE) ---------- */
+// P: Float32Array xyz per vertex. I: index array or null (triangle soup). Welds vertices, links triangles across shared edges,
+// and precomputes per-triangle normals plus a lightly smoothed normal that tolerates scan noise.
+function buildTopo(P, I) {
+  const N = P.length / 3, T = (I ? I.length : N) / 3;
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < N; i++) for (let k = 0; k < 3; k++) { const v = P[3 * i + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+  const diag = Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) || 1, eps = diag * 1e-6;
+  const q = new Int32Array(3 * N), canon = new Int32Array(N);
+  let size = 1; while (size < 2 * N) size <<= 1;
+  const tab = new Int32Array(size).fill(-1), mask = size - 1;
+  for (let i = 0; i < N; i++) {
+    const x = Math.round((P[3 * i] - mn[0]) / eps), y = Math.round((P[3 * i + 1] - mn[1]) / eps), z = Math.round((P[3 * i + 2] - mn[2]) / eps);
+    q[3 * i] = x; q[3 * i + 1] = y; q[3 * i + 2] = z;
+    let h = ((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0) & mask;
+    for (;;) {
+      const j = tab[h];
+      if (j < 0) { tab[h] = i; canon[i] = i; break; }
+      if (q[3 * j] === x && q[3 * j + 1] === y && q[3 * j + 2] === z) { canon[i] = j; break; }
+      h = (h + 1) & mask;
+    }
+  }
+  const nrm = new Float32Array(3 * T), area = new Float32Array(T), tvv = new Int32Array(3 * T);
+  for (let t = 0; t < T; t++) {
+    const a = I ? I[3 * t] : 3 * t, b = I ? I[3 * t + 1] : 3 * t + 1, c = I ? I[3 * t + 2] : 3 * t + 2;
+    tvv[3 * t] = canon[a]; tvv[3 * t + 1] = canon[b]; tvv[3 * t + 2] = canon[c];
+    const ux = P[3 * b] - P[3 * a], uy = P[3 * b + 1] - P[3 * a + 1], uz = P[3 * b + 2] - P[3 * a + 2];
+    const vx = P[3 * c] - P[3 * a], vy = P[3 * c + 1] - P[3 * a + 1], vz = P[3 * c + 2] - P[3 * a + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx, l = Math.hypot(nx, ny, nz);
+    area[t] = l / 2;
+    if (l > 0) { nrm[3 * t] = nx / l; nrm[3 * t + 1] = ny / l; nrm[3 * t + 2] = nz / l; }
+  }
+  const nbr = new Int32Array(3 * T).fill(-1);
+  let es = 1; while (es < 6 * T) es <<= 1;
+  const et = new Int32Array(es).fill(-1), emask = es - 1, ea = new Int32Array(3 * T), eb = new Int32Array(3 * T);
+  for (let s = 0; s < 3 * T; s++) {
+    const t = (s / 3) | 0, e = s - 3 * t;
+    let a = tvv[s], b = tvv[3 * t + (e + 1) % 3];
+    if (a === b) continue;
+    if (a > b) { const c = a; a = b; b = c; }
+    ea[s] = a; eb[s] = b;
+    let h = ((Math.imul(a, 73856093) ^ Math.imul(b, 19349663)) >>> 0) & emask;
+    for (;;) {
+      const j = et[h];
+      if (j < 0) { et[h] = s; break; }
+      if (ea[j] === a && eb[j] === b) { if (nbr[j] < 0 && nbr[s] < 0) { nbr[j] = (s / 3) | 0; nbr[s] = (j / 3) | 0; } break; }
+      h = (h + 1) & emask;
+    }
+  }
+  const sm = new Float32Array(3 * T);
+  for (let t = 0; t < T; t++) {
+    const nx = nrm[3 * t], ny = nrm[3 * t + 1], nz = nrm[3 * t + 2];
+    let x = nx, y = ny, z = nz;
+    for (let e = 0; e < 3; e++) {
+      const nb = nbr[3 * t + e]; if (nb < 0) continue;
+      const dx = nrm[3 * nb], dy = nrm[3 * nb + 1], dz = nrm[3 * nb + 2], sg = (nx * dx + ny * dy + nz * dz) < 0 ? -1 : 1;
+      x += sg * dx; y += sg * dy; z += sg * dz;
+    }
+    const l = Math.hypot(x, y, z) || 1; sm[3 * t] = x / l; sm[3 * t + 1] = y / l; sm[3 * t + 2] = z / l;
+  }
+  return {P, I, N, T, canon, tvv, nbr, nrm, sm, area, diag};
+}
+
+// Flood fill over triangles from a seed. A neighbour joins if the smoothed-normal angle to its parent is under edgeDeg
+// (so sharp edges stop it). With flat=true it must also stay within edgeDeg of the running mean normal, so a flat patch
+// can't creep round a gentle curve.
+function growRegion(tp, seed, edgeDeg, flat) {
+  const {nbr, sm, area, T} = tp, cosS = Math.cos(edgeDeg * Math.PI / 180);
+  const inR = new Uint8Array(T), q = new Int32Array(T);
+  let head = 0, tail = 0;
+  q[tail++] = seed; inR[seed] = 1;
+  let sx = sm[3 * seed], sy = sm[3 * seed + 1], sz = sm[3 * seed + 2], mx = sx, my = sy, mz = sz, cnt = 0;
+  while (head < tail) {
+    const t = q[head++], tx = sm[3 * t], ty = sm[3 * t + 1], tz = sm[3 * t + 2];
+    for (let e = 0; e < 3; e++) {
+      const nb = nbr[3 * t + e];
+      if (nb < 0 || inR[nb]) continue;
+      const bx = sm[3 * nb], by = sm[3 * nb + 1], bz = sm[3 * nb + 2];
+      if (area[nb] > 0 && area[t] > 0) {
+        if (Math.abs(tx * bx + ty * by + tz * bz) < cosS) continue;
+        if (flat && Math.abs(mx * bx + my * by + mz * bz) < cosS) continue;
+      }
+      inR[nb] = 1; q[tail++] = nb;
+      const sg = (mx * bx + my * by + mz * bz) < 0 ? -1 : 1, w = area[nb];
+      sx += sg * bx * w; sy += sg * by * w; sz += sg * bz * w;
+      if ((++cnt & 31) === 0) { const l = Math.hypot(sx, sy, sz) || 1; mx = sx / l; my = sy / l; mz = sz / l; }
+    }
+  }
+  return {inR, tris: q.slice(0, tail)};
+}
+
+function eig3(A) {  // Jacobi for a symmetric 3x3; returns eigenpairs sorted ascending
+  const a = A.map(r => r.slice()), v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 40; sweep++) {
+    const off = a[0][1] ** 2 + a[0][2] ** 2 + a[1][2] ** 2, dg = a[0][0] ** 2 + a[1][1] ** 2 + a[2][2] ** 2;
+    if (off <= 1e-26 * (dg + 1e-300)) break;
+    for (const [p, r] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(a[p][r]) < 1e-300) continue;
+      const th = (a[r][r] - a[p][p]) / (2 * a[p][r]), t = (th >= 0 ? 1 : -1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) { const x = a[k][p], y = a[k][r]; a[k][p] = c * x - s * y; a[k][r] = s * x + c * y; }
+      for (let k = 0; k < 3; k++) { const x = a[p][k], y = a[r][k]; a[p][k] = c * x - s * y; a[r][k] = s * x + c * y; }
+      for (let k = 0; k < 3; k++) { const x = v[k][p], y = v[k][r]; v[k][p] = c * x - s * y; v[k][r] = s * x + c * y; }
+    }
+  }
+  return [0, 1, 2].map(i => ({val: a[i][i], vec: [v[0][i], v[1][i], v[2][i]]})).sort((x, y) => x.val - y.val);
+}
+function solveN(M, b) {  // Gauss-Jordan with pivoting; null if singular
+  const n = b.length, A = M.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-14) return null;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = 0; r < n; r++) if (r !== c) { const f = A[r][c] / A[c][c]; for (let k = c; k <= n; k++) A[r][k] -= f * A[c][k]; }
+  }
+  return A.map((r, i) => r[n] / r[i]);
+}
+
+// Weighted least-squares fits of a plane, sphere and cylinder to the region; picks the simplest that explains it.
+function fitRegion(tp, tris, flatOnly) {
+  const {P, tvv, area, sm} = tp, n = tris.length;
+  const X = new Float64Array(3 * n), W = new Float64Array(n);
+  const mn = [1e300, 1e300, 1e300], mxv = [-1e300, -1e300, -1e300];
+  let sw = 0, cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < n; i++) {
+    const t = tris[i]; let x = 0, y = 0, z = 0;
+    for (let e = 0; e < 3; e++) {
+      const v = tvv[3 * t + e];
+      for (let k = 0; k < 3; k++) { const c = P[3 * v + k]; if (c < mn[k]) mn[k] = c; if (c > mxv[k]) mxv[k] = c; }
+      x += P[3 * v]; y += P[3 * v + 1]; z += P[3 * v + 2];
+    }
+    x /= 3; y /= 3; z /= 3; const w = area[t] || 1e-12;
+    X[3 * i] = x; X[3 * i + 1] = y; X[3 * i + 2] = z; W[i] = w; sw += w; cx += w * x; cy += w * y; cz += w * z;
+  }
+  const c = [cx / sw, cy / sw, cz / sw], extent = Math.hypot(mxv[0] - mn[0], mxv[1] - mn[1], mxv[2] - mn[2]) || 1;
+  for (let i = 0; i < n; i++) { X[3 * i] -= c[0]; X[3 * i + 1] -= c[1]; X[3 * i + 2] -= c[2]; }
+  // plane
+  const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let i = 0; i < n; i++) for (let a = 0; a < 3; a++) for (let b = a; b < 3; b++) C[a][b] += W[i] * X[3 * i + a] * X[3 * i + b];
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) C[a][b] = a <= b ? C[a][b] / sw : C[b][a] / sw;
+  const ep = eig3(C);
+  let pn = ep[0].vec, dsum = 0;
+  for (let i = 0; i < n; i++) { const t = tris[i]; dsum += W[i] * (pn[0] * sm[3 * t] + pn[1] * sm[3 * t + 1] + pn[2] * sm[3 * t + 2]); }
+  if (dsum < 0) pn = pn.map(x => -x);
+  const plane = {type: 'plane', c, n: pn, rms: Math.sqrt(Math.max(ep[0].val, 0))};
+  const out = {extent, plane, sphere: null, cyl: null, best: plane};
+  if (flatOnly) return out;
+  // sphere: |p|^2 + D x + E y + F z + G = 0
+  {
+    const M = Array.from({length: 4}, () => [0, 0, 0, 0]), rhs = [0, 0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const x = X[3 * i], y = X[3 * i + 1], z = X[3 * i + 2], r = [x, y, z, 1], b = -(x * x + y * y + z * z), w = W[i] / sw;
+      for (let a = 0; a < 4; a++) { rhs[a] += w * r[a] * b; for (let k = 0; k < 4; k++) M[a][k] += w * r[a] * r[k]; }
+    }
+    const th = solveN(M, rhs);
+    if (th) {
+      const o = [-th[0] / 2, -th[1] / 2, -th[2] / 2], r2 = o[0] ** 2 + o[1] ** 2 + o[2] ** 2 - th[3];
+      if (r2 > 0 && Math.sqrt(r2) < extent * 1e3) {
+        const r = Math.sqrt(r2); let s = 0;
+        for (let i = 0; i < n; i++) { const d = Math.hypot(X[3 * i] - o[0], X[3 * i + 1] - o[1], X[3 * i + 2] - o[2]) - r; s += W[i] * d * d; }
+        out.sphere = {type: 'sphere', c: [o[0] + c[0], o[1] + c[1], o[2] + c[2]], r, rms: Math.sqrt(s / sw)};
+      }
+    }
+  }
+  // cylinder: axis = direction the surface normals never point along; then a circle fit in the perpendicular plane
+  {
+    const Mn = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let i = 0; i < n; i++) {
+      const t = tris[i], nv = [sm[3 * t], sm[3 * t + 1], sm[3 * t + 2]];
+      for (let a = 0; a < 3; a++) for (let b = a; b < 3; b++) Mn[a][b] += W[i] * nv[a] * nv[b] / sw;
+    }
+    for (let a = 0; a < 3; a++) for (let b = 0; b < a; b++) Mn[a][b] = Mn[b][a];
+    const ax = eig3(Mn)[0].vec;
+    const h = Math.abs(ax[0]) < .9 ? [1, 0, 0] : [0, 1, 0];
+    let u = [ax[1] * h[2] - ax[2] * h[1], ax[2] * h[0] - ax[0] * h[2], ax[0] * h[1] - ax[1] * h[0]];
+    const ul = Math.hypot(...u); u = u.map(x => x / ul);
+    const v = [ax[1] * u[2] - ax[2] * u[1], ax[2] * u[0] - ax[0] * u[2], ax[0] * u[1] - ax[1] * u[0]];
+    const M = Array.from({length: 3}, () => [0, 0, 0]), rhs = [0, 0, 0], U = new Float64Array(n), V = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = X[3 * i] * u[0] + X[3 * i + 1] * u[1] + X[3 * i + 2] * u[2], y = X[3 * i] * v[0] + X[3 * i + 1] * v[1] + X[3 * i + 2] * v[2];
+      U[i] = x; V[i] = y;
+      const r = [x, y, 1], b = -(x * x + y * y), w = W[i] / sw;
+      for (let a = 0; a < 3; a++) { rhs[a] += w * r[a] * b; for (let k = 0; k < 3; k++) M[a][k] += w * r[a] * r[k]; }
+    }
+    const th = solveN(M, rhs);
+    if (th) {
+      const ox = -th[0] / 2, oy = -th[1] / 2, r2 = ox * ox + oy * oy - th[2];
+      if (r2 > 0 && Math.sqrt(r2) < extent * 1e3) {
+        const r = Math.sqrt(r2); let s = 0;
+        for (let i = 0; i < n; i++) { const d = Math.hypot(U[i] - ox, V[i] - oy) - r; s += W[i] * d * d; }
+        out.cyl = {type: 'cylinder', c: [c[0] + u[0] * ox + v[0] * oy, c[1] + u[1] * ox + v[1] * oy, c[2] + u[2] * ox + v[2] * oy], a: ax, r, rms: Math.sqrt(s / sw)};
+      }
+    }
+  }
+  // Prefer the plane unless a curved model is clearly better (at least ~40% lower error).
+  let best = plane;
+  for (const m of [out.cyl, out.sphere]) if (m && m.rms < 0.6 * plane.rms && m.rms < best.rms) best = m;
+  out.best = best;
+  return out;
+}
+
+// Edges of region triangles that don't continue into the region, chained into closed loops of canonical vertex ids.
+function boundaryLoops(tp, tris, inR) {
+  const {nbr, tvv} = tp, ea = [], eb = [], adj = new Map();
+  for (let i = 0; i < tris.length; i++) {
+    const t = tris[i];
+    for (let e = 0; e < 3; e++) {
+      const nb = nbr[3 * t + e];
+      if (nb >= 0 && inR[nb]) continue;
+      const a = tvv[3 * t + e], b = tvv[3 * t + (e + 1) % 3];
+      if (a === b) continue;
+      const k = ea.length; ea.push(a); eb.push(b);
+      (adj.get(a) || adj.set(a, []).get(a)).push(k); (adj.get(b) || adj.set(b, []).get(b)).push(k);
+    }
+  }
+  const used = new Uint8Array(ea.length), loops = [];
+  for (let i = 0; i < ea.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    const start = ea[i], loop = [start]; let cur = eb[i], guard = ea.length + 2;
+    while (cur !== start && guard-- > 0) {
+      loop.push(cur);
+      let nxt = -1;
+      for (const k of adj.get(cur)) if (!used[k]) { used[k] = 1; nxt = ea[k] === cur ? eb[k] : ea[k]; break; }
+      if (nxt < 0) break;
+      cur = nxt;
+    }
+    if (loop.length >= 3) loops.push(loop);
+  }
+  return loops;
+}
+
+// Douglas-Peucker on a closed loop of [x,y,z]; returns the indices to keep.
+function simplifyLoop(p, tol) {
+  const n = p.length;
+  if (n <= 4) return p.map((_, i) => i);
+  let m = 0, md = -1;
+  for (let i = 1; i < n; i++) { const d = (p[i][0] - p[0][0]) ** 2 + (p[i][1] - p[0][1]) ** 2 + (p[i][2] - p[0][2]) ** 2; if (d > md) { md = d; m = i; } }
+  const keep = new Uint8Array(n + 1); keep[0] = keep[m] = keep[n] = 1;
+  const at = i => p[i % n];
+  const segDist = (q, a, b) => {
+    const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2], l2 = abx * abx + aby * aby + abz * abz;
+    let t = l2 > 0 ? ((q[0] - a[0]) * abx + (q[1] - a[1]) * aby + (q[2] - a[2]) * abz) / l2 : 0; t = Math.max(0, Math.min(1, t));
+    return Math.hypot(q[0] - a[0] - t * abx, q[1] - a[1] - t * aby, q[2] - a[2] - t * abz);
+  };
+  for (const [s0, s1] of [[0, m], [m, n]]) {
+    const stack = [[s0, s1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); let dm = 0, mi = -1;
+      for (let k = a + 1; k < b; k++) { const d = segDist(at(k), at(a), at(b)); if (d > dm) { dm = d; mi = k; } }
+      if (dm > tol && mi >= 0) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+    }
+  }
+  const out = []; for (let i = 0; i < n; i++) if (keep[i]) out.push(i);
+  return out;
+}
+/* ---------- end surface segmentation ---------- */
+
+/* ---------- surface finder (glue) ---------- */
+const sv = v => new V3(v[0], v[1], v[2]);
+function clearSurf() {
+  if (surf) { scene.remove(surf.group); surf.group.traverse(o => o.geometry && o.geometry.dispose()); }
+  surf = null; $('surfInfo').innerHTML = '';
+  ['sfPlane', 'sfSketch', 'sfClear'].forEach(id => $(id).disabled = true); requestRender();
+}
+async function surfaceClick(e) {
+  if (!pick(e) || !lastHit) return status('Click on the mesh.');
+  await surfRun(lastHit.faceIndex);
+}
+async function surfRun(seed) {
+  try {
+    if (!topo) {
+      status('Preparing surface topology (one-time; multi-million triangle meshes take a few seconds)…');
+      await new Promise(r => setTimeout(r, 30));
+      const pa = geom.attributes.position; let arr = pa.array;
+      if (pa.isInterleavedBufferAttribute || pa.itemSize !== 3) {
+        arr = new Float32Array(pa.count * 3);
+        for (let i = 0; i < pa.count; i++) { arr[3 * i] = pa.getX(i); arr[3 * i + 1] = pa.getY(i); arr[3 * i + 2] = pa.getZ(i); }
+      }
+      topo = buildTopo(arr, geom.index ? geom.index.array : null);
+    }
+    const flat = $('segMode').value === 'flat';
+    const {inR, tris} = growRegion(topo, seed, +$('segAng').value, flat);
+    const fit = fitRegion(topo, tris, flat), loops = boundaryLoops(topo, tris, inR);
+    clearSurf();
+    let area = 0; for (let i = 0; i < tris.length; i++) area += topo.area[tris[i]];
+    const g = new THREE.Group(), P = topo.P, I = topo.I, pos = new Float32Array(tris.length * 9);
+    for (let i = 0; i < tris.length; i++) for (let e = 0; e < 3; e++) {
+      const v = I ? I[3 * tris[i] + e] : 3 * tris[i] + e, o = 9 * i + 3 * e;
+      pos[o] = P[3 * v]; pos[o + 1] = P[3 * v + 1]; pos[o + 2] = P[3 * v + 2];
+    }
+    const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const rm = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({color: 0x00c28a, transparent: true, opacity: .5, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2}));
+    rm.frustumCulled = false; g.add(rm);
+    for (const l of loops) {
+      const ln = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(l.map(v => new V3(P[3 * v], P[3 * v + 1], P[3 * v + 2]))),
+        new THREE.LineBasicMaterial({color: 0xffd000, transparent: true, opacity: .8, depthTest: false}));
+      ln.renderOrder = 8; ln.frustumCulled = false; g.add(ln);
+    }
+    const b = fit.best;
+    if (b.type === 'cylinder') {
+      const a = sv(b.a), c = sv(b.c), L = fit.extent * .7;
+      const ax = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c.clone().addScaledVector(a, -L), c.clone().addScaledVector(a, L)]), new THREE.LineBasicMaterial({color: 0xe0245e, depthTest: false}));
+      ax.renderOrder = 12; ax.frustumCulled = false; g.add(ax);
+    } else if (b.type === 'sphere') {
+      const cp = new THREE.Points(new THREE.BufferGeometry().setFromPoints([sv(b.c)]), new THREE.PointsMaterial({color: 0xe0245e, size: 10, sizeAttenuation: false, depthTest: false}));
+      cp.renderOrder = 12; cp.frustumCulled = false; g.add(cp);
+    }
+    scene.add(g);
+    surf = {seed, tris, fit, loops, group: g, area, outline: null, outG: null};
+    ['sfPlane', 'sfClear'].forEach(id => $(id).disabled = false);
+    rebuildOutline();
+    status(`Found ${tris.length.toLocaleString()} triangles; best fit: ${b.type}. If it leaked into a neighbouring surface, lower the edge angle; if it stopped short on a noisy patch, raise it.`);
+    requestRender();
+  } catch (err) { console.error(err); status('Surface finder failed: ' + err.message); }
+}
+function rebuildOutline() {
+  if (!surf) return;
+  if (surf.outG) { surf.group.remove(surf.outG); surf.outG.traverse(o => o.geometry && o.geometry.dispose()); surf.outG = null; }
+  surf.outline = null; $('sfSketch').disabled = true;
+  const P = topo.P;
+  if (surf.loops.length) {
+    const per = l => { let t = 0; for (let i = 0; i < l.length; i++) { const a = l[i], c = l[(i + 1) % l.length]; t += Math.hypot(P[3 * a] - P[3 * c], P[3 * a + 1] - P[3 * c + 1], P[3 * a + 2] - P[3 * c + 2]); } return t; };
+    const outer = surf.loops.reduce((m, l) => per(l) > per(m) ? l : m);
+    const p3 = outer.map(v => [P[3 * v], P[3 * v + 1], P[3 * v + 2]]);
+    const out = simplifyLoop(p3, surf.fit.extent * (+$('segTol').value / 1000)).map(i => sv(p3[i]));
+    const og = new THREE.Group();
+    const ln = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(out), new THREE.LineBasicMaterial({color: 0xff6a00, depthTest: false}));
+    const dt = new THREE.Points(new THREE.BufferGeometry().setFromPoints(out), new THREE.PointsMaterial({color: 0xff6a00, size: 7, sizeAttenuation: false, depthTest: false}));
+    [ln, dt].forEach(o => { o.renderOrder = 13; o.frustumCulled = false; og.add(o); });
+    surf.group.add(og); surf.outG = og; surf.outline = out; $('sfSketch').disabled = out.length < 3;
+  }
+  updateSurfInfo(); requestRender();
+}
+function updateSurfInfo() {
+  const f = surf.fit, b = f.best, k = scale, r3 = a => a.map(x => x.toFixed(3)).join(', ');
+  const rows = [['Fitted', b.type === 'plane' ? 'plane' : `${b.type} Ø ${fmt(2 * b.r * k)} mm`],
+    ['Triangles', surf.tris.length.toLocaleString()], ['Area', fmt(surf.area * k * k) + ' mm²'], ['Fit error (RMS)', fmt(b.rms * k) + ' mm']];
+  if (b.type !== 'plane') rows.push(['Plane error', fmt(f.plane.rms * k) + ' mm'], ...(b.type === 'cylinder' ? [['Axis', r3(b.a)]] : []));
+  else rows.push(['Normal', r3(b.n)]);
+  rows.push(['Boundary loops', surf.loops.length + (surf.loops.length > 1 ? ` (${surf.loops.length - 1} hole${surf.loops.length > 2 ? 's' : ''})` : '')],
+    ['Outline points', surf.outline ? String(surf.outline.length) : '–']);
+  $('surfInfo').innerHTML = rows.map(([a, c]) => `<span>${a}</span><span>${c}</span>`).join('');
+}
+
+/* ---------- pointer handling ---------- */
+let down = null, hoverQueued = false, drag = -1;
+cv.addEventListener('pointerdown', e => {
+  down = {x: e.clientX, y: e.clientY, b: e.button};
+  if (tool === 'plane' && tc.visible && tc.axis) { down = null; return; }
+  if (tool === 'move' && e.button === 0 && !pickingOrigin) {
+    const i = nearestPoint(e);
+    if (i >= 0) { drag = i; controls.enabled = false; cv.setPointerCapture(e.pointerId); solid = null; lastUndo = null; cv.style.cursor = 'grabbing'; }
+  }
+}, {capture: true});
+cv.addEventListener('pointerup', e => {
+  if (drag >= 0) {
+    const i = drag; drag = -1; controls.enabled = true; cv.style.cursor = 'grab';
+    movePoint(i, pts[i], true); status('Point moved. BREP rebuilt.'); return;
+  }
+  if (!down || down.b !== 0 || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+  down = null;
+  if (pickingOrigin) return originClick(e);
+  if (tool === 'move') return;
+  if (tool === 'join') return joinClick(e);
+  if (tool === 'plane') return planeClick(e);
+  if (tool === 'surface') return surfaceClick(e);
+  if (tool !== 'circle' && cur.length >= 3 && screenDist(e, cur[0]) < 12) return commit(true);
+  const sn = drawPlane(), p = pickOn(e, sn);
+  if (p) addPoint(p, sn);
+});
+cv.addEventListener('pointermove', e => {
+  if (drag >= 0) { const p = pickOn(e, ptPlane.get(drag) || null); if (p && !p.equals(pts[drag])) movePoint(drag, p, false); return; }
+  if (e.buttons || hoverQueued) return;
+  hoverQueued = true;
+  requestAnimationFrame(() => {
+    hoverQueued = false;
+    let p = null, cursor = 'crosshair';
+    if (pickingOrigin) p = pick(e);
+    else if (tool === 'move') { const i = nearestPoint(e); if (i >= 0) p = pts[i]; cursor = i >= 0 ? 'grab' : 'default'; }
+    else if (tool === 'join') { const h = endpointAt(e); if (h) p = pts[endIdx(h)]; cursor = h ? 'pointer' : 'default'; }
+    else if (tool === 'plane' || tool === 'surface') p = pick(e);
+    else p = pickOn(e, drawPlane());
+    hover.visible = !!p; if (p) hover.position.copy(p);
+    cv.style.cursor = cursor; requestRender();
+  });
+});
+
+function keyOf(v) { return v.x + ',' + v.y + ',' + v.z; }
+function ptIndex(v, snap) {
+  const k = keyOf(v);
+  let i = ptMap.get(k);
+  if (i === undefined) { i = pts.length; pts.push(v.clone()); ptMap.set(k, i); if (snap) ptPlane.set(i, snap); }
+  return i;
+}
+function addPoint(v, snap) {
+  const i = ptIndex(v, snap);
+  if ((tool === 'path' || tool === 'bezier') && cur.length >= 3 && i === cur[0]) return commit(true);
+  if (cur[cur.length - 1] === i) return;
+  if (tool === 'bezier' && cur.length >= 26) return status('Bezier degree is limited to 25 (26 control points). Press Enter to finish.');
+  cur.push(i);
+  if (tool === 'circle' && cur.length === 3) return commit(false);
+  drawCur();
+}
+
+/* ---------- shape descriptions ---------- */
+const V3 = THREE.Vector3;
+function bez(P, t) {
+  const q = P.map(p => p.clone());
+  for (let k = q.length - 1; k > 0; k--) for (let i = 0; i < k; i++) q[i].lerp(q[i + 1], t);
+  return q[0];
+}
+function triangulate(P) {
+  const n = new V3();
+  for (let i = 0; i < P.length; i++) n.add(new V3().crossVectors(P[i], P[(i + 1) % P.length]));
+  const area = n.length() / 2; n.normalize();
+  const u = new V3(Math.abs(n.x) < .9 ? 1 : 0, Math.abs(n.x) < .9 ? 0 : 1, 0).cross(n).normalize();
+  const v = n.clone().cross(u);
+  const c2 = P.map(p => new THREE.Vector2(p.dot(u), p.dot(v)));
+  return {area, tris: THREE.ShapeUtils.triangulateShape(c2, [])};
+}
+// Everything derived from a shape's point ids: display samples, labels, mm measurements.
+function describe(s) {
+  const ids = s.ids, P = ids.map(mm), raw = ids.map(i => pts[i]);
+  const d = {samples: raw, loop: false, labels: [], ctrl: null, len: 0};
+  const face = (rawPts, area) => {
+    const t = triangulate(rawPts.map(p => p.clone().multiplyScalar(scale)));
+    d.facePts = rawPts; d.tris = t.tris; d.area = area ?? t.area;
+  };
+  if (s.type === 'circle' && ids.length === 3) {
+    const [a, b, c] = P, ab = b.clone().sub(a), ac = c.clone().sub(a), n = new V3().crossVectors(ab, ac), n2 = n.lengthSq();
+    if (n2 < 1e-9) return {err: 'Those 3 points are collinear, so they define no circle.'};
+    const off = new V3().crossVectors(n, ab).multiplyScalar(ac.lengthSq()).add(new V3().crossVectors(ac, n).multiplyScalar(ab.lengthSq())).divideScalar(2 * n2);
+    const cen = a.clone().add(off), r = cen.distanceTo(a);
+    const nn = n.clone().normalize(), u = a.clone().sub(cen).normalize(), v = nn.clone().cross(u);
+    d.center = cen; d.r = r; d.normal = nn; d.loop = true; d.len = 2 * Math.PI * r;
+    d.samples = Array.from({length: 96}, (_, k) => {
+      const t = k / 96 * Math.PI * 2;
+      return cen.clone().addScaledVector(u, r * Math.cos(t)).addScaledVector(v, r * Math.sin(t)).divideScalar(scale);
+    });
+    d.labels = [{pos: cen.clone().divideScalar(scale), text: `Ø ${fmt(2 * r)} mm (r ${fmt(r)})`}];
+    if (s.fill) face(d.samples, Math.PI * r * r);
+    return d;
+  }
+  if (s.type === 'bezier' && ids.length >= 3) {
+    d.ctrl = raw;
+    d.samples = Array.from({length: 65}, (_, k) => bez(raw, k / 64));
+    for (let k = 1; k < d.samples.length; k++) d.len += d.samples[k].distanceTo(d.samples[k - 1]) * scale;
+    d.labels = [{pos: d.samples[32].clone(), text: `${fmt(d.len)} mm`}];
+    if (s.closed) {
+      const cl = d.samples[64].distanceTo(d.samples[0]) * scale;
+      d.loop = true; d.len += cl;
+      d.labels.push({pos: d.samples[64].clone().add(d.samples[0]).multiplyScalar(.5), text: fmt(cl) + ' mm'});
+      if (s.fill) face(d.samples);
+    }
+    return d;
+  }
+  const n = s.closed ? ids.length : ids.length - 1;
+  for (let k = 0; k < n; k++) {
+    const a = ids[k], b = ids[(k + 1) % ids.length], L = mm(a).distanceTo(mm(b));
+    d.len += L;
+    d.labels.push({pos: pts[a].clone().add(pts[b]).multiplyScalar(.5), text: fmt(L) + ' mm'});
+  }
+  if (s.closed) { const t = triangulate(P); d.area = t.area; d.tris = t.tris; d.facePts = raw; }
+  return d;
+}
+
+/* ---------- visuals ---------- */
+const allLabels = new Set();
+function makeVisual(s) {
+  const d = s.d, g = new THREE.Group(); g.userData.labels = [];
+  const P = s.ids.map(i => pts[i]);
+  const line = new ((d.loop || s.closed) ? THREE.LineLoop : THREE.Line)(new THREE.BufferGeometry().setFromPoints(d.samples),
+    new THREE.LineBasicMaterial({color: 0x1b4fd8, depthTest: false}));
+  line.renderOrder = 10; line.frustumCulled = false; g.add(line); g.userData.line = line;
+  if (d.ctrl) {
+    const cp = new THREE.Line(new THREE.BufferGeometry().setFromPoints(d.ctrl), new THREE.LineBasicMaterial({color: 0x1b4fd8, transparent: true, opacity: .35, depthTest: false}));
+    cp.renderOrder = 10; cp.frustumCulled = false; g.add(cp);
+  }
+  const dots = new THREE.Points(new THREE.BufferGeometry().setFromPoints(P),
+    new THREE.PointsMaterial({color: 0xe0245e, size: 8, sizeAttenuation: false, depthTest: false}));
+  dots.renderOrder = 11; dots.frustumCulled = false; g.add(dots);
+  if (d.tris) {
+    const fg = new THREE.BufferGeometry().setFromPoints(d.facePts || P); fg.setIndex(d.tris.flat());
+    const fm = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({color: 0x1b4fd8, transparent: true, opacity: .25, side: THREE.DoubleSide, depthTest: false, depthWrite: false}));
+    fm.renderOrder = 9; fm.frustumCulled = false; g.add(fm);
+  }
+  for (const l of d.labels) {
+    const el = document.createElement('div'); el.className = 'lb'; el.textContent = l.text;
+    labelsEl.appendChild(el);
+    const L = {el, pos: l.pos.clone()}; allLabels.add(L); g.userData.labels.push(L);
+  }
+  scene.add(g); return g;
+}
+function removeVisual(g) {
+  if (!g) return;
+  scene.remove(g);
+  g.userData.labels.forEach(L => { L.el.remove(); allLabels.delete(L); });
+  g.traverse(o => o.geometry && o.geometry.dispose());
+}
+let hl = -1;
+function highlight(i) {
+  if (hl >= 0 && shapes[hl]) shapes[hl].group.userData.line.material.color.set(0x1b4fd8);
+  hl = i;
+  if (i >= 0 && shapes[i]) shapes[i].group.userData.line.material.color.set(0xffa000);
+  requestRender();
+}
+const toolType = () => tool === 'circle' || tool === 'bezier' ? tool : 'path';
+function curShape() { return {type: toolType(), ids: cur, closed: false}; }
+function drawCur() {
+  removeVisual(curGroup); curGroup = null;
+  if (cur.length) { const s = curShape(); s.d = describe(s); curGroup = makeVisual(s); }
+  updateUI(); requestRender();
+}
+
+/* ---------- shapes ---------- */
+function commit(close) {
+  const type = toolType();
+  if (type === 'path' && (cur.length < 2 || (close && cur.length < 3))) return status('A face needs at least 3 points; a line needs 2.');
+  if (type === 'circle' && cur.length !== 3) return status('A circle needs exactly 3 points on its edge.');
+  if (type === 'bezier' && cur.length < 3) return status('A Bezier needs at least 3 control points.');
+  const s = {type, ids: cur.slice(), closed: type !== 'circle' && !!close, fill: true};
+  s.d = describe(s);
+  if (s.d.err) return status(s.d.err);
+  s.group = makeVisual(s);
+  shapes.push(s); buildBrep(s); solid = null; lastUndo = null;
+  removeVisual(curGroup); curGroup = null; cur = [];
+  updateUI(); requestRender();
+}
+function refresh(s, brep) {
+  removeVisual(s.group); s.d = describe(s);
+  if (s.d.err) { s.d = {samples: s.ids.map(i => pts[i]), labels: [], len: 0}; s.kind = 'degenerate'; }
+  s.group = makeVisual(s);
+  if (brep) { s.brep = null; s.kind = ''; buildBrep(s); }
+  if (shapes.indexOf(s) === hl) s.group.userData.line.material.color.set(0xffa000);
+}
+function clearAll() {
+  removeVisual(curGroup); curGroup = null; cur = [];
+  shapes.forEach(s => removeVisual(s.group)); shapes.length = 0; pts.length = 0; ptMap.clear(); ptPlane.clear(); solid = null; hl = -1; lastUndo = null; joinSel = null;
+  updateUI();
+}
+function rebuildAll() { shapes.forEach(s => refresh(s, true)); solid = null; drawCur(); updateUI(); }
+function deleteShape(i) {
+  removeVisual(shapes[i].group); shapes.splice(i, 1); solid = null; hl = -1; lastUndo = null;
+  updateUI(); requestRender(); status('Shape deleted.');
+}
+function undo() {
+  if (cur.length) { cur.pop(); drawCur(); }
+  else if (lastUndo) { const f = lastUndo; lastUndo = null; f(); }
+  else if (shapes.length) deleteShape(shapes.length - 1);
+}
+
+/* ---------- moving points ---------- */
+function usedIdx() { const u = new Set(cur); shapes.forEach(s => s.ids.forEach(i => u.add(i))); return u; }
+function nearestPoint(e) {
+  const r = cv.getBoundingClientRect(); let best = -1, bd = 14;
+  for (const i of usedIdx()) {
+    tmp.copy(pts[i]).project(camera);
+    if (tmp.z > 1) continue;
+    const d = Math.hypot((tmp.x * .5 + .5) * r.width - (e.clientX - r.left), (-tmp.y * .5 + .5) * r.height - (e.clientY - r.top));
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+function movePoint(i, p, final) {
+  if (ptMap.get(keyOf(pts[i])) === i) ptMap.delete(keyOf(pts[i]));
+  pts[i].copy(p); if (!ptMap.has(keyOf(p))) ptMap.set(keyOf(p), i);
+  shapes.forEach(s => s.ids.includes(i) && refresh(s, final));
+  if (cur.includes(i)) drawCur();
+  if (final) { solid = null; updateUI(); }
+  requestRender();
+}
+
+/* ---------- BREP (OpenCascade) ---------- */
+function polyWire(P, close) {
+  const m = new oc.BRepBuilderAPI_MakePolygon_1();
+  P.forEach(p => m.Add_1(new oc.gp_Pnt_3(p.x, p.y, p.z)));
+  if (close) m.Close();
+  return m.Wire();
+}
+function compound(list) {
+  const c = new oc.TopoDS_Compound(), b = new oc.BRep_Builder();
+  b.MakeCompound(c); list.forEach(s => b.Add(c, s)); return c;
+}
+const gp = p => new oc.gp_Pnt_3(p.x, p.y, p.z);
+function buildBrep(s) {
+  if (!oc || s.brep) return;
+  s.isFace = false;
+  try {
+    const P = s.ids.map(mm);
+    if (s.type === 'path' && s.closed) {
+      const mf = new oc.BRepBuilderAPI_MakeFace_15(polyWire(P, true), true);
+      if (mf.IsDone()) { s.brep = mf.Face(); s.kind = 'planar face'; }
+      else {
+        s.brep = compound(s.d.tris.map(t => new oc.BRepBuilderAPI_MakeFace_15(polyWire(t.map(i => P[i]), true), true).Face()));
+        s.kind = `non-planar, ${s.d.tris.length} triangles`;
+      }
+      s.isFace = true;
+    } else if (s.type === 'path') {
+      const edges = [];
+      for (let i = 0; i < P.length - 1; i++) edges.push(new oc.BRepBuilderAPI_MakeEdge_3(gp(P[i]), gp(P[i + 1])).Edge());
+      s.brep = compound(edges); s.kind = 'polyline';
+    } else {
+      let edges, name;
+      if (s.type === 'circle') {
+        const c = s.d.center, n = s.d.normal;
+        const ax = new oc.gp_Ax2_3(gp(c), new oc.gp_Dir_4(n.x, n.y, n.z));
+        edges = [new oc.BRepBuilderAPI_MakeEdge_8(new oc.gp_Circ_2(ax, s.d.r)).Edge()]; name = 'circle';
+      } else {
+        const arr = new oc.TColgp_Array1OfPnt_2(1, P.length);
+        P.forEach((p, i) => arr.SetValue(i + 1, gp(p)));
+        edges = [new oc.BRepBuilderAPI_MakeEdge_24(new oc.Handle_Geom_Curve_2(new oc.Geom_BezierCurve_1(arr))).Edge()];
+        name = `Bezier, degree ${P.length - 1}`;
+        if (s.closed) { edges.push(new oc.BRepBuilderAPI_MakeEdge_3(gp(P.at(-1)), gp(P[0])).Edge()); name = 'closed ' + name; }
+      }
+      let f = null;
+      if (s.d.tris) {
+        const w = new oc.BRepBuilderAPI_MakeWire_1(); edges.forEach(e => w.Add_1(e));
+        const mf = new oc.BRepBuilderAPI_MakeFace_15(w.Wire(), true);
+        if (mf.IsDone()) f = mf.Face();
+      }
+      if (f) { s.brep = f; s.isFace = true; s.kind = name + ', planar face'; }
+      else { s.brep = compound(edges); s.kind = name + (s.d.tris ? ': not planar, edges only (draw it on a plane to get a face)' : ', edge'); }
+    }
+  } catch (err) { console.error(err); s.kind = 'BREP failed (see console)'; }
+  updateUI();
+}
+function sewToSolid() {
+  const faces = shapes.filter(s => s.isFace && s.brep);
+  if (faces.length < 4) return status('Need at least 4 faces to enclose a volume.');
+  try {
+    const sew = new oc.BRepBuilderAPI_Sewing(+prompt('Sewing tolerance (mm)', '0.01') || 0.01, true, true, true, false);
+    faces.forEach(f => sew.Add(f.brep));
+    sew.Perform(new oc.Message_ProgressRange_1());
+    const free = sew.NbFreeEdges();
+    const sewn = sew.SewedShape();
+    if (free > 0) { status(`Not watertight: ${free} free edge(s). Add the missing faces or raise the sewing tolerance.`); return; }
+    const ex = new oc.TopExp_Explorer_2(sewn, oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    if (!ex.More()) return status('Sewing produced no shell.');
+    const shell = oc.TopoDS.Shell_1(ex.Current());
+    const sol = new oc.BRepBuilderAPI_MakeSolid_3(shell).Solid();
+    try { oc.BRepLib.OrientClosedSolid(sol); } catch (_) {}
+    solid = sol; solidInfo = 'solid';
+    try {
+      const gp = new oc.GProp_GProps_1();
+      oc.BRepGProp.VolumeProperties_1(sol, gp, false, false, false);
+      solidInfo = `solid, ${fmt(Math.abs(gp.Mass()))} mm³`;
+    } catch (_) {}
+    status('Sewn to a closed solid. Export STEP will now write the solid.');
+    updateUI();
+  } catch (err) { console.error(err); status('Sewing failed: ' + err.message); }
+}
+function exportStep() {
+  try {
+    const items = solid ? [solid] : shapes.filter(s => s.brep).map(s => s.brep);
+    if (!items.length) return status('Nothing to export yet.');
+    const w = new oc.STEPControl_Writer_1();
+    let shape = items.length === 1 ? items[0] : compound(items);
+    const framed = !!planeObj && $('exOn').checked;
+    if (framed) shape = toFrame(shape);
+    w.Transfer(shape, oc.STEPControl_StepModelType.STEPControl_AsIs, true, new oc.Message_ProgressRange_1());
+    w.Write('/out.step');
+    const bytes = oc.FS.readFile('/out.step');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bytes], {type: 'application/step'}));
+    a.download = 'model.step'; a.click();
+    status(`Exported ${solid ? 'solid' : items.length + ' shape(s)'} in mm, ${framed ? 'relative to the working plane frame (origin at the axes).' : 'in the scan\'s own coordinates. Place a plane to export in a chosen frame.'}`);
+  } catch (err) { console.error(err); status('STEP export failed: ' + err.message); }
+}
+
+/* ---------- panel ---------- */
+function updateUI() {
+  const kv = [];
+  if (cur.length) {
+    const P = cur.map(mm); let tot = 0;
+    for (let i = 1; i < P.length; i++) tot += P[i].distanceTo(P[i - 1]);
+    kv.push(['Points', cur.length], ['Last segment', P.length > 1 ? fmt(P.at(-1).distanceTo(P.at(-2))) + ' mm' : '–'], ['Path length', fmt(tot) + ' mm']);
+    if (P.length > 2) {
+      const a = P.at(-3).sub(P.at(-2)), b = P.at(-1).sub(P.at(-2));
+      kv.push(['Angle at last', (a.angleTo(b) * 180 / Math.PI).toFixed(1) + '°']);
+    }
+    if (P.length > 1) kv.push(['Chord to start', fmt(P.at(-1).distanceTo(P[0])) + ' mm']);
+  }
+  $('live').innerHTML = kv.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
+  const lbl = s => s.type === 'circle' ? 'circle' : s.type === 'bezier' ? `${s.closed ? 'closed ' : ''}bezier (${s.ids.length} pts)` : `${s.closed ? 'face' : 'line'} (${s.ids.length} pts)`;
+  const val = s => s.type === 'circle' ? `Ø ${fmt(2 * s.d.r)} mm` : s.d.tris ? fmt(s.d.area) + ' mm²' : fmt(s.d.len) + ' mm';
+  const fillBox = (s, i) => (s.type === 'circle' || (s.type === 'bezier' && s.closed)) ? `<label title="Fill with a face"><input type="checkbox" data-fill="${i}" ${s.fill ? 'checked' : ''}>face</label>` : '';
+  $('list').innerHTML = shapes.map((s, i) =>
+    `<div class="sh" data-i="${i}"><span>${i + 1}. ${lbl(s)}</span><span>${val(s)}</span>${fillBox(s, i)}` +
+    `<button class="x" data-del="${i}" title="Delete shape ${i + 1}" aria-label="Delete shape ${i + 1}">✕</button></div>` +
+    (s.kind ? `<div class="sub">${s.kind}</div>` : '')).join('') +
+    (solid ? `<div class="sh"><span><strong>Solid</strong></span><span>${solidInfo}</span></div>` : '');
+  document.querySelectorAll('[data-pl]').forEach(b => b.disabled = !geom);
+  ['plMode', 'plView', 'plDel', 'exOrigin', 'exReset', 'exFlip'].forEach(id => $(id).disabled = !planeObj);
+  updateEndDots();
+  const ready = !!oc;
+  $('bLine').disabled = tool === 'path' ? cur.length < 2 : tool === 'bezier' ? cur.length < 3 : true;
+  $('bFace').disabled = (tool !== 'path' && tool !== 'bezier') || cur.length < 3;
+  $('bUndo').disabled = !cur.length && !shapes.length;
+  $('bSew').disabled = !ready || shapes.filter(s => s.isFace).length < 4;
+  $('bStep').disabled = !ready || !shapes.length;
+}
+$('bLine').onclick = () => commit(false);
+$('bFace').onclick = () => commit(true);
+$('bUndo').onclick = undo;
+$('bSew').onclick = sewToSolid;
+$('bStep').onclick = exportStep;
+const HINT = {
+  path: 'Click vertices. Click the first point again or press C to close a face; Enter finishes a line.',
+  circle: 'Click 3 points on the circle\'s edge. The circle is made on the third click.',
+  bezier: 'Click control points (3 or more). The curve is pulled toward them, not through them. Enter finishes, C closes.',
+  move: 'Drag a placed point. It snaps to mesh vertices (or stays on its plane), and every shape using it updates.',
+  plane: 'Click the mesh to place a plane on the surface (or pick 3 points), then rotate it with the gizmo.',
+  join: 'Click the end of one line, then the end of another to join them. Both ends of the same line close it into a face.',
+  surface: 'Click a surface. The app grows a region out to the sharp edges, outlines it and fits a plane, cylinder or sphere.'};
+const TOOLS = ['path', 'circle', 'bezier', 'move', 'plane', 'join', 'surface'];
+function setTool(t) {
+  tool = t; cur = []; drag = -1; joinSel = null; pickingOrigin = false; planePts = []; updatePlaneDots();
+  controls.enabled = true; hover.visible = false;
+  document.querySelectorAll('#tools button').forEach(b => b.setAttribute('aria-pressed', b.dataset.t === t));
+  cv.style.cursor = t === 'move' || t === 'join' ? 'default' : 'crosshair';
+  syncGizmo(); drawCur(); status(HINT[t]);
+}
+$('list').addEventListener('change', e => {
+  const c = e.target.closest('[data-fill]'); if (!c) return;
+  const s = shapes[+c.dataset.fill]; s.fill = c.checked; solid = null; lastUndo = null; refresh(s, true); updateUI(); requestRender();
+});
+document.querySelectorAll('[data-pl]').forEach(b => b.onclick = () => {
+  if (!geom) return;
+  setTool('plane');
+  makePlane(geom.boundingBox.getCenter(new V3()), {x: new V3(1, 0, 0), y: new V3(0, 1, 0), z: new V3(0, 0, 1)}[b.dataset.pl]);
+  status('Plane placed at the mesh centre. Rotate or move it with the gizmo, then pick a drawing tool.');
+});
+$('plMode').onclick = () => { tc.setMode(tc.mode === 'rotate' ? 'translate' : 'rotate'); $('plMode').textContent = 'Gizmo: ' + tc.mode; requestRender(); };
+$('segAng').oninput = () => $('segAngV').textContent = $('segAng').value + '°';
+$('segAng').onchange = () => surf && surfRun(surf.seed);
+$('segMode').onchange = () => surf && surfRun(surf.seed);
+$('segTol').oninput = () => { $('segTolV').textContent = ($('segTol').value / 10) + '%'; rebuildOutline(); };
+$('sfClear').onclick = clearSurf;
+$('sfPlane').onclick = () => {
+  if (!surf) return;
+  const o = sv(surf.fit.plane.c), n = sv(surf.fit.plane.n);
+  if (n.dot(camera.position.clone().sub(o)) < 0) n.negate();
+  setTool('plane'); makePlane(o, n);
+  status('Working plane set from the fitted surface. Pick a drawing tool to draw on it.');
+};
+$('sfSketch').onclick = () => {
+  if (!surf || !surf.outline || surf.outline.length < 3) return;
+  const isPlane = surf.fit.best.type === 'plane';
+  const snap = isPlane ? {o: sv(surf.fit.plane.c), n: sv(surf.fit.plane.n)} : null;
+  const ids = [];
+  surf.outline.forEach(v => { const i = ptIndex(snap ? projectPt(v, snap) : v, snap); if (ids[ids.length - 1] !== i) ids.push(i); });
+  if (ids.length > 1 && ids[0] === ids.at(-1)) ids.pop();
+  if (ids.length < 3) return status('The outline collapsed to fewer than 3 points. Raise the outline detail slider.');
+  solid = null; lastUndo = null;
+  addShape({type: 'path', ids, closed: true, fill: true}); updateUI(); requestRender();
+  status(isPlane ? 'Outline added as a face, projected onto the fitted plane.' : 'Outline added as a 3D loop. It is not planar, so its face is triangulated.');
+};
+$('exOrigin').onclick = () => { if (!planeObj) return; pickingOrigin = true; cv.style.cursor = 'crosshair'; status('Click a mesh vertex or placed point to use as the export origin. Esc cancels.'); };
+$('exReset').onclick = () => { exportLocal.set(0, 0, 0); syncAxes(); status('Export origin reset to the plane centre.'); };
+$('exFlip').onclick = () => { if (!planeObj) return; planeObj.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new V3(1, 0, 0), Math.PI)); requestRender(); status('Flipped: Z now points the other way.'); };
+$('plView').onclick = viewAlong;
+$('plDel').onclick = removePlane;
+$('tools').onclick = e => e.target.dataset.t && setTool(e.target.dataset.t);
+$('list').addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (b) deleteShape(+b.dataset.del); });
+$('list').addEventListener('mouseover', e => { const r = e.target.closest('.sh[data-i]'); highlight(r ? +r.dataset.i : -1); });
+$('list').addEventListener('mouseleave', () => highlight(-1));
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  const drawing = tool === 'path' || tool === 'circle' || tool === 'bezier';
+  if (e.key >= '1' && e.key <= '7' && !e.ctrlKey && !e.metaKey) setTool(TOOLS[e.key - 1]);
+  else if (e.key === 'Enter' && drawing) commit(false);
+  else if ((e.key === 'c' || e.key === 'C') && (tool === 'path' || tool === 'bezier')) commit(true);
+  else if (e.key === 'Escape') { cur = []; pickingOrigin = false; drawCur(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+});
+
+/* ---------- OpenCascade load (async, viewer works meanwhile) ---------- */
+const ocEl = $('oc');
+async function loadOC() {
+  // 2.0 beta build (OCCT 7.5+). The 1.1.1 package has no opencascade.full.js, which was the original bug.
+  const bases = ['./', 'https://unpkg.com/opencascade.js@2.0.0-beta.b5ff984/dist/'];
+  const errs = [];
+  for (const base of bases) {
+    try {
+      ocEl.textContent = 'OpenCascade: loading from ' + (base === './' ? 'local folder' : 'unpkg') + ' (50 MB, first load is slow)…';
+      const factory = (await import(base + 'opencascade.full.js')).default;
+      if (typeof factory !== 'function') throw new Error('no factory exported');
+      return await new factory({locateFile: f => base + f});
+    } catch (e) { errs.push((base === './' ? 'local' : 'unpkg') + ': ' + e.message); console.warn('OpenCascade load failed from', base, e); }
+  }
+  throw new Error(errs.join(' | '));
+}
+loadOC().then(o => {
+  oc = o; ocEl.textContent = 'OpenCascade: ready'; shapes.forEach(buildBrep); updateUI();
+}).catch(e => { ocEl.textContent = 'OpenCascade: failed (' + e.message + '). Measuring still works; see console.'; });
+
+resize(); updateUI();
+</script>
+</body>
+</html>
